@@ -182,6 +182,7 @@ def adicionar_inicio_automatico():
 # === Interface Gráfica (Tkinter) ===
 def exibir_menu():
     root = tk.Tk()
+    root.iconbitmap(ICON_PATH)
     root.title("CliperBot - Modo de Execução")
     root.geometry("360x200")
     root.configure(bg="#1e1e1e")
