@@ -39,12 +39,14 @@ from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
 import requests
 
+# === Evita múltiplas instâncias ===
 mutex_name = "CliperInstance"
 mutex = win32event.CreateMutex(None, False, mutex_name)
 if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
     print("⚠️ Cliper já está em execução.")
     sys.exit()
 
+# === Configuração principal ===
 TELEGRAM_TOKEN = "8072521222:AAGUszYhoHW4RhdEuxP88c6-wKpr9GeFst0"
 EXTENSOES_VIDEOS = ['.mp4', '.mkv', '.avi', '.mov']
 CLIPER_DIR = os.path.join(os.getenv("APPDATA"), "Cliper")
@@ -63,6 +65,7 @@ else:
 CHAT_ID = None
 PASTA_MONITORADA = None
 
+# === Carregamento de config com verificação de versão ===
 def salvar_config_local(chat_id, pasta):
     os.makedirs(CLIPER_DIR, exist_ok=True)
     with open(CONFIG_PATH, "w") as f:
@@ -72,22 +75,19 @@ def salvar_config_local(chat_id, pasta):
 def carregar_config_local():
     global CHAT_ID, PASTA_MONITORADA
     if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r") as f:
-                dados = json.load(f)
-        except PermissionError:
-            logging.error("Erro: config.json está em uso por outro processo.")
-            sys.exit(1)
-        if dados.get("versao") != VERSAO_ATUAL:
-            os.remove(CONFIG_PATH)
-            logging.warning("Versão antiga da config detectada. Reconfigurando...")
-            return False
-        CHAT_ID = dados.get("chat_id")
-        PASTA_MONITORADA = dados.get("pasta")
-        logging.info("Configuração carregada.")
-        return True
+        with open(CONFIG_PATH, "r") as f:
+            dados = json.load(f)
+            if dados.get("versao") != VERSAO_ATUAL:
+                os.remove(CONFIG_PATH)
+                logging.warning("Versão antiga detectada. Reconfigurando...")
+                return False
+            CHAT_ID = dados.get("chat_id")
+            PASTA_MONITORADA = dados.get("pasta")
+            logging.info("Configuração carregada.")
+            return True
     return False
 
+# === Configuração inicial ===
 def configurar_primeira_vez():
     global CHAT_ID, PASTA_MONITORADA
     root = tk.Tk()
@@ -102,6 +102,7 @@ def configurar_primeira_vez():
     CHAT_ID = telegram_client.detectar_chat_id()
     salvar_config_local(CHAT_ID, PASTA_MONITORADA)
 
+# === Telegram ===
 class TelegramClient:
     def __init__(self, token):
         self.token = token
@@ -137,11 +138,11 @@ class TelegramClient:
                 data = {'chat_id': chat_id, 'caption': f"📹 Novo vídeo: {nome}"}
                 res = self.session.post(url, data=data, files=files)
             if res.status_code == 200:
-                logging.info("Vídeo enviado com sucesso.")
+                logging.info("Vídeo enviado para o Telegram.")
             else:
-                logging.warning("Telegram respondeu: %s", res.text)
+                logging.warning("Erro Telegram: %s", res.text)
         except Exception as e:
-            logging.error("Erro ao enviar vídeo: %s", e)
+            logging.error("Falha ao enviar vídeo: %s", e)
 
 telegram_client = TelegramClient(TELEGRAM_TOKEN)
 executor = ThreadPoolExecutor(max_workers=4)
@@ -149,6 +150,7 @@ executor = ThreadPoolExecutor(max_workers=4)
 def enviar_video(caminho):
     executor.submit(telegram_client.enviar_video, caminho, CHAT_ID)
 
+# === Monitor de arquivos ===
 class VideoHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
@@ -173,6 +175,7 @@ def iniciar_monitoramento():
 def iniciar_monitoramento_em_thread():
     threading.Thread(target=iniciar_monitoramento, daemon=True).start()
 
+# === Tray / GUI ===
 def criar_icone_tray():
     try:
         image = Image.open(ICON_PATH)
@@ -185,30 +188,16 @@ def criar_icone_tray():
     iniciar_monitoramento_em_thread()
     icon.run()
 
-def iniciar_debug_cmd():
-    senha = simpledialog.askstring("Senha de Debug", "Digite a senha:", show="*")
-    if senha != "2202":
-        messagebox.showerror("Erro", "Senha incorreta.")
-        return
-
-    script = os.path.abspath(__file__)
-    if getattr(sys, 'frozen', False):
-        script = sys.executable
-
-    cmd = f'start cmd /k "{script} --debug"'
-    os.system(cmd)
-
 def adicionar_inicio_automatico():
     nome = "Cliper"
     caminho = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
     try:
-        chave = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                               r"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, winreg.KEY_SET_VALUE)
+        chave = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(chave, nome, 0, winreg.REG_SZ, f'"{caminho}" --no-menu')
         winreg.CloseKey(chave)
         logging.info("Início automático ativado.")
     except Exception as e:
-        logging.error("Erro ao ativar início automático: %s", e)
+        logging.error("Erro ao registrar início automático: %s", e)
 
 def exibir_menu():
     root = tk.Tk()
@@ -231,38 +220,45 @@ def exibir_menu():
         criar_icone_tray()
 
     def modo_debug():
-        root.destroy()
-        iniciar_debug_cmd()
+        senha = simpledialog.askstring("Senha", "Digite a senha do modo debug:", show="*")
+        if senha == "2202":
+            subprocess.Popen(["cmd", "/k", sys.executable, os.path.abspath(__file__), "--debug"])
+            root.destroy()
+        else:
+            messagebox.showerror("Erro", "Senha incorreta.")
 
-    tk.Label(root, text="CLIPER - MODO DE EXECUÇÃO", fg="white", bg="#1e1e1e", font=("Segoe UI", 12, "bold")).pack(pady=15)
+    tk.Label(root, text="CLIPER - MODO DE EXECUÇÃO", fg="white", bg="#1e1e1e", font=("Segoe UI", 12, "bold")).pack(pady=10)
     tk.Button(root, text="1 - Rodar normalmente (com janela)", command=modo1, width=40).pack(pady=5)
     tk.Button(root, text="2 - Rodar minimizado", command=modo2, width=40).pack(pady=5)
-    tk.Button(root, text="3 - Rodar em segundo plano (bandeja)", command=modo3, width=40).pack(pady=5)
-    tk.Button(root, text="4 - Modo Debug (CMD)", command=modo_debug, width=40).pack(pady=5)
+    tk.Button(root, text="3 - Rodar na bandeja", command=modo3, width=40).pack(pady=5)
+    tk.Button(root, text="4 - Modo debug (senha)", command=modo_debug, width=40).pack(pady=5)
 
     root.mainloop()
 
 def exibir_tela_status():
     janela = tk.Tk()
-    janela.title("Cliper - Em execução")
+    janela.title("Cliper - Rodando")
     janela.geometry("300x100")
     janela.configure(bg="#2e2e2e")
-    tk.Label(janela, text="✅ Cliper rodando...\nMonitorando por vídeos.", fg="white", bg="#2e2e2e").pack(pady=20)
+    tk.Label(janela, text="✅ Cliper monitorando vídeos...", fg="white", bg="#2e2e2e").pack(pady=20)
     janela.mainloop()
 
+# === Entrada principal ===
 if __name__ == "__main__":
-    if "--debug" in sys.argv:
-        logging.getLogger().setLevel(logging.DEBUG)
-
     if getattr(sys, 'frozen', False):
         adicionar_inicio_automatico()
+
+    if "--debug" in sys.argv:
+        logging.getLogger().setLevel(logging.DEBUG)
+        if not carregar_config_local():
+            configurar_primeira_vez()
+        iniciar_monitoramento()
+        sys.exit()
 
     if not os.path.exists(CLIPER_DIR) or not os.path.exists(CONFIG_PATH) or not carregar_config_local():
         configurar_primeira_vez()
 
-    if "--no-menu" in sys.argv:
+    if len(sys.argv) > 1 and sys.argv[1] == "--no-menu":
         criar_icone_tray()
-    elif "--debug" in sys.argv:
-        iniciar_monitoramento()
     else:
         exibir_menu()
