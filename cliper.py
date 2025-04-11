@@ -1,44 +1,72 @@
-import os
+import subprocess
 import sys
+
+def instalar(modulo, nome_pip=None):
+    try:
+        __import__(modulo)
+    except ImportError:
+        print(f"📦 Instalando dependência: {modulo}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", nome_pip or modulo])
+
+for lib in [
+    ("requests",),
+    ("win32api", "pywin32"),
+    ("win32event", "pywin32"),
+    ("watchdog",),
+    ("PIL", "Pillow"),
+    ("pystray",),
+]:
+    instalar(*lib)
+
+import os
 import time
 import json
-import requests
+import logging
 import threading
 import tkinter as tk
 import winreg
+import win32event
+import win32api
+import win32con
+import ctypes
 from tkinter import messagebox, filedialog
+from concurrent.futures import ThreadPoolExecutor
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
+import requests
 
-# === Configs fixas ===
+mutex_name = "CliperInstance"
+mutex = win32event.CreateMutex(None, False, mutex_name)
+if win32api.GetLastError() == win32con.ERROR_ALREADY_EXISTS:
+    print("⚠️ Cliper já está em execução. Encerrando instância anterior...")
+    ctypes.windll.user32.PostMessageW(0xFFFF, 0x0010, 0, 0)
+    time.sleep(1)
+
 TELEGRAM_TOKEN = ""
 EXTENSOES_VIDEOS = ['.mp4', '.mkv', '.avi', '.mov']
-CLIPER_DIR = os.path.join(os.getenv("APPDATA"), "CliperBot")
+CLIPER_DIR = os.path.join(os.getenv("APPDATA"), "Cliper")
 CONFIG_PATH = os.path.join(CLIPER_DIR, "config.json")
+ICON_PATH = os.path.join(os.path.dirname(__file__), "cliper.ico")
 
-# === Variáveis globais ===
-CHAT_ID = None
-PASTA_MONITORADA = None
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# === Icone e diretórios ===
 if getattr(sys, 'frozen', False):
     BASE_DIR = sys._MEIPASS
     EXEC_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(__file__)
     EXEC_DIR = BASE_DIR
-ICON_PATH = os.path.join(BASE_DIR, "cliper.ico")
 
-# === Salvar e carregar configuração local ===
+CHAT_ID = None
+PASTA_MONITORADA = None
+
 def salvar_config_local(chat_id, pasta):
     os.makedirs(CLIPER_DIR, exist_ok=True)
     with open(CONFIG_PATH, "w") as f:
-        json.dump({
-            "chat_id": chat_id,
-            "pasta": pasta
-        }, f)
+        json.dump({"chat_id": chat_id, "pasta": pasta}, f)
+    logging.info("Configuração salva localmente.")
 
 def carregar_config_local():
     global CHAT_ID, PASTA_MONITORADA
@@ -47,17 +75,17 @@ def carregar_config_local():
             dados = json.load(f)
             CHAT_ID = dados.get("chat_id")
             PASTA_MONITORADA = dados.get("pasta")
+            logging.info("Configuração carregada.")
             return True
     return False
 
-# === Perguntar ao usuário e salvar ===
 def configurar_primeira_vez():
     global CHAT_ID, PASTA_MONITORADA
 
     root = tk.Tk()
     root.withdraw()
 
-    messagebox.showinfo("CliperBot", "Configuração inicial:\nEscolha a pasta a ser monitorada.")
+    messagebox.showinfo("Cliper", "Configuração inicial:\nEscolha a pasta a ser monitorada.")
     pasta = filedialog.askdirectory(title="Selecione a pasta")
     if not pasta:
         messagebox.showerror("Erro", "Pasta não selecionada.")
@@ -65,65 +93,71 @@ def configurar_primeira_vez():
     PASTA_MONITORADA = pasta
 
     messagebox.showinfo("Telegram", "Envie uma mensagem para seu bot e clique em OK.")
-    CHAT_ID = detectar_chat_id(TELEGRAM_TOKEN)
+    CHAT_ID = telegram_client.detectar_chat_id()
 
     salvar_config_local(CHAT_ID, PASTA_MONITORADA)
 
-# === Detectar chat ID ===
-def detectar_chat_id(bot_token):
-    print("⏳ Aguardando mensagem no bot do Telegram...")
-    ultimo_id = None
-    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
-    while True:
-        try:
-            res = requests.get(url, timeout=10)
-            updates = res.json().get("result", [])
-            if updates:
-                ultimo = updates[-1]
-                if "message" in ultimo and ultimo["update_id"] != ultimo_id:
-                    ultimo_id = ultimo["update_id"]
-                    chat_id = ultimo["message"]["chat"]["id"]
-                    nome = ultimo["message"]["chat"].get("first_name", "Usuário")
-                    print(f"✅ Chat ID capturado: {chat_id} ({nome})")
-                    return chat_id
-        except Exception as e:
-            print("❌ Erro ao buscar chat_id:", e)
-        time.sleep(1)
+class TelegramClient:
+    def __init__(self, token):
+        self.token = token
+        self.session = requests.Session()
+        self.base_url = f"https://api.telegram.org/bot{self.token}"
 
-# === Enviar vídeo ===
-def enviar_telegram(caminho):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo"
-    nome = os.path.basename(caminho)
-    try:
-        with open(caminho, 'rb') as f:
-            files = {'video': (nome, f)}
-            data = {'chat_id': CHAT_ID, 'caption': f"📹 Novo vídeo: {nome}"}
-            res = requests.post(url, data=data, files=files)
-        if res.status_code == 200:
-            print("✅ Enviado para o Telegram.")
-        else:
-            print("⚠️ Telegram:", res.text)
-    except Exception as e:
-        print("❌ Erro Telegram:", e)
+    def detectar_chat_id(self):
+        logging.info("Aguardando mensagem no bot do Telegram...")
+        ultimo_id = None
+        url = f"{self.base_url}/getUpdates"
+        while True:
+            try:
+                res = self.session.get(url, timeout=10)
+                updates = res.json().get("result", [])
+                if updates:
+                    ultimo = updates[-1]
+                    if "message" in ultimo and ultimo["update_id"] != ultimo_id:
+                        ultimo_id = ultimo["update_id"]
+                        chat_id = ultimo["message"]["chat"]["id"]
+                        nome = ultimo["message"]["chat"].get("first_name", "Usuário")
+                        logging.info(f"Chat ID capturado: {chat_id} ({nome})")
+                        return chat_id
+            except Exception as e:
+                logging.error("Erro ao buscar chat_id: %s", e)
+            time.sleep(1)
+
+    def enviar_video(self, caminho, chat_id):
+        url = f"{self.base_url}/sendVideo"
+        nome = os.path.basename(caminho)
+        try:
+            with open(caminho, 'rb') as f:
+                files = {'video': (nome, f)}
+                data = {'chat_id': chat_id, 'caption': f"📹 Novo vídeo: {nome}"}
+                res = self.session.post(url, data=data, files=files)
+            if res.status_code == 200:
+                logging.info("Vídeo enviado para o Telegram com sucesso.")
+            else:
+                logging.warning("Telegram respondeu: %s", res.text)
+        except Exception as e:
+            logging.error("Erro ao enviar vídeo: %s", e)
+
+telegram_client = TelegramClient(TELEGRAM_TOKEN)
+executor = ThreadPoolExecutor(max_workers=4)
 
 def enviar_video(caminho):
-    threading.Thread(target=enviar_telegram, args=(caminho,), daemon=True).start()
+    executor.submit(telegram_client.enviar_video, caminho, CHAT_ID)
 
-# === Monitoramento ===
 class VideoHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
             _, ext = os.path.splitext(event.src_path)
             if ext.lower() in EXTENSOES_VIDEOS:
                 time.sleep(2)
-                print(f"🎥 Vídeo detectado: {event.src_path}")
+                logging.info("Vídeo detectado: %s", event.src_path)
                 enviar_video(event.src_path)
 
 def iniciar_monitoramento():
     observer = Observer()
     observer.schedule(VideoHandler(), path=PASTA_MONITORADA, recursive=False)
     observer.start()
-    print("🔍 Monitorando:", PASTA_MONITORADA)
+    logging.info("Monitorando: %s", PASTA_MONITORADA)
     try:
         while True:
             time.sleep(1)
@@ -134,38 +168,35 @@ def iniciar_monitoramento():
 def iniciar_monitoramento_em_thread():
     threading.Thread(target=iniciar_monitoramento, daemon=True).start()
 
-# === Ícone bandeja ===
 def criar_icone_tray():
     try:
         image = Image.open(ICON_PATH)
-    except:
+    except Exception as e:
+        logging.error("Erro ao carregar ícone, utilizando placeholder: %s", e)
         image = Image.new("RGB", (64, 64), "black")
         draw = ImageDraw.Draw(image)
         draw.rectangle((16, 16, 48, 48), fill="white")
-    icon = Icon("Cliper")
-    icon.icon = image
-    icon.title = "Cliper - Rodando"
+    icon = Icon("Cliper", icon=image, title="Cliper - Rodando")
     icon.menu = Menu(MenuItem("Sair", lambda icon, item: icon.stop()))
     iniciar_monitoramento_em_thread()
     icon.run()
 
-# === Início automático ===
 def adicionar_inicio_automatico():
-    nome = "CliperBot"
+    nome = "Cliper"
     caminho = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
     try:
         chave = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                               r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+                               r"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(chave, nome, 0, winreg.REG_SZ, f'"{caminho}" --no-menu')
         winreg.CloseKey(chave)
-        print("🔁 Início automático ativado.")
+        logging.info("Início automático ativado.")
     except Exception as e:
-        print("❌ Erro ao ativar início automático:", e)
+        logging.error("Erro ao ativar início automático: %s", e)
 
-# === Menu ===
 def exibir_menu():
     root = tk.Tk()
-    root.title("CliperBot - Modo de Execução")
+    root.iconbitmap(ICON_PATH)
+    root.title("Cliper - Modo de Execução")
     root.geometry("360x200")
     root.configure(bg="#1e1e1e")
 
@@ -182,9 +213,7 @@ def exibir_menu():
         root.destroy()
         criar_icone_tray()
 
-    label = tk.Label(root, text="CLIPERBOT - MODO DE EXECUÇÃO", fg="white", bg="#1e1e1e", font=("Segoe UI", 12, "bold"))
-    label.pack(pady=15)
-
+    tk.Label(root, text="CLIPER - MODO DE EXECUÇÃO", fg="white", bg="#1e1e1e", font=("Segoe UI", 12, "bold")).pack(pady=15)
     tk.Button(root, text="1 - Rodar normalmente (com janela)", command=modo1, width=40).pack(pady=5)
     tk.Button(root, text="2 - Rodar minimizado", command=modo2, width=40).pack(pady=5)
     tk.Button(root, text="3 - Rodar em segundo plano (bandeja)", command=modo3, width=40).pack(pady=5)
@@ -193,15 +222,13 @@ def exibir_menu():
 
 def exibir_tela_status():
     janela = tk.Tk()
-    janela.title("CliperBot - Em execução")
+    janela.title("Cliper - Em execução")
     janela.geometry("300x100")
     janela.configure(bg="#2e2e2e")
-    label = tk.Label(janela, text="✅ CliperBot rodando...\nMonitorando por vídeos.",
-                     fg="white", bg="#2e2e2e")
-    label.pack(pady=20)
+    tk.Label(janela, text="✅ Cliper rodando...\nMonitorando por vídeos.",
+             fg="white", bg="#2e2e2e").pack(pady=20)
     janela.mainloop()
 
-# === Execução principal ===
 if __name__ == "__main__":
     if getattr(sys, 'frozen', False):
         adicionar_inicio_automatico()
