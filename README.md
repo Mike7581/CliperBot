@@ -1,3 +1,4 @@
+
 # CliperBot
 
 **Automatic video uploader for Telegram**  
@@ -38,3 +39,63 @@ On first run:
 1. Run:  
    ```bash
    cliper.exe --debug
+   ```
+2. Enter the password **2202** when prompted.
+3. The window shows:
+   - ⏺ **Console**: logs of  
+     - `[Monitor] Iniciando monitoramento em: …`  
+     - `[Monitor] Arquivo novo detectado: …`  
+     - `[Monitor] Enviando vídeo detectado: …`  
+     - `[Envio] Sucesso / Falha → filename`  
+     - `[Manual] Envio OK / FAIL → filename`  
+   - ▶️ **Select & Send**: manually pick a video and upload it.
+   - 📂 **Open folder**, **View config**, **Clear console** buttons.
+
+---
+
+## Configuration
+
+Stored in  
+```
+%APPDATA%\Cliper\config.json
+```
+```json
+{
+  "chat_id": "YOUR_TELEGRAM_CHAT_ID",
+  "pasta": "C:/Your/Monitored/Folder",
+  "versao": "latest"
+}
+```
+
+CliperBot also keeps its UUID in  
+```
+%APPDATA%\Cliper\id.json
+```
+
+---
+
+## Reset setup
+
+1. Press **Win + R**, type `%appdata%`, Enter.
+2. Open the `Cliper` folder.
+3. Delete `config.json`.
+4. Run `cliper.exe` again to reconfigure.
+
+---
+
+## Features
+
+- **Folder monitoring** via `watchdog`, filtered by `.mp4` / `.mkv` / `.avi` / `.mov`.
+- **Minimum size filter**: files under **5 MB** are skipped.
+- **Telegram integration**:  
+  - First-run grabs your chat ID via `getUpdates`.  
+  - Uploads videos with `sendVideo` using `requests`.
+- **Debug UI**: interactive console + manual upload.
+- **Tray & GUI modes**: windowed, minimized, or tray-only.
+- **Auto-start on Windows**: adds itself to  
+  `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
+
+---
+
+> If you’re thinking about decompiling to swipe the bot token…  
+> there are better ways to spend your time. 😉
